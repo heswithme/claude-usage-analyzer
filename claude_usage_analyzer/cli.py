@@ -15,6 +15,7 @@ from rich.table import Table
 
 from .parser import UsageParser
 from .pricing import CostCalculator
+from .analytics import calculate_cache_metrics, calculate_response_times, analyze_tool_usage
 
 console = Console()
 
@@ -158,13 +159,31 @@ def find_docker_claude_dirs() -> List[Tuple[str, str, str]]:
     default=10,
     help='Limit number of items shown in tables (default: 10)'
 )
+@click.option(
+    '--cache',
+    is_flag=True,
+    help='Show cache efficiency analytics'
+)
+@click.option(
+    '--response-times',
+    is_flag=True,
+    help='Show response time analysis'
+)
+@click.option(
+    '--full',
+    is_flag=True,
+    help='Show all analytics including cache, response times, and tools'
+)
 def main(
     claude_dir: str,
     docker: bool,
     output: Optional[str],
     summary_only: bool,
     tools: bool,
-    limit: int
+    limit: int,
+    cache: bool,
+    response_times: bool,
+    full: bool
 ):
     """Analyze Claude AI usage logs and calculate costs."""
     
@@ -209,7 +228,7 @@ def main(
             console.print(f"\n[green]✓[/green] Results exported to {output}")
         
         # Display results with source indicators
-        display_results(merged_stats, merged_costs, sources, summary_only, tools, limit)
+        display_results(merged_stats, merged_costs, sources, summary_only, tools, limit, cache, response_times, full)
     else:
         console.print("[red]No Claude usage data found[/red]")
 
@@ -319,7 +338,8 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
         "by_date": {},
         "errors": [],
         "tool_usage": {},
-        "hourly_distribution": {}
+        "hourly_distribution": {},
+        "all_messages": []  # Store all messages for analytics
     }
     
     merged_costs = {
@@ -384,6 +404,9 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
         
         # Merge errors
         merged_stats['errors'].extend(stats.get('errors', []))
+        
+        # Merge all messages
+        merged_stats['all_messages'].extend(stats.get('all_messages', []))
     
     # Merge costs
     for costs in all_costs:
@@ -423,7 +446,7 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
     return merged_stats, merged_costs
 
 
-def display_results(stats: dict, costs: dict, sources: List[str], summary_only: bool, tools: bool, limit: int):
+def display_results(stats: dict, costs: dict, sources: List[str], summary_only: bool, tools: bool, limit: int, cache: bool = False, response_times: bool = False, full: bool = False):
     """Display merged results with source indicators."""
     # Add source indicator to title if includes Docker
     source_text = ""
@@ -440,7 +463,16 @@ def display_results(stats: dict, costs: dict, sources: List[str], summary_only: 
         display_daily_breakdown(stats, costs, limit)
         display_session_breakdown(stats, costs, limit)
         
-        if tools:
+        # Display enhanced analytics
+        if full or cache:
+            display_cache_analytics(stats)
+        
+        if full or response_times:
+            display_response_time_analysis(stats)
+            
+        if full or tools:
+            display_enhanced_tool_usage(stats, limit)
+        elif tools:
             display_tool_usage(stats, limit)
     
     # Display errors if any
@@ -632,6 +664,166 @@ def display_tool_usage(stats: dict, limit: int):
         )
     
     console.print(table)
+
+
+def display_cache_analytics(stats: dict):
+    """Display cache efficiency analytics."""
+    console.print("\n[bold]Cache Analytics[/bold]")
+    
+    cache_metrics = calculate_cache_metrics(stats)
+    
+    table = Table(show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    
+    # Format percentages and values
+    hit_rate = cache_metrics.get('cache_hit_rate', 0) * 100
+    efficiency = cache_metrics.get('cache_efficiency', 0)
+    roi = cache_metrics.get('cache_roi', 0)
+    savings = cache_metrics.get('cache_total_savings', 0)
+    
+    table.add_row("Cache Hit Rate", f"{hit_rate:.1f}%")
+    table.add_row("Cache Efficiency", f"{efficiency:.1f}x")
+    table.add_row("Cache ROI", format_cost(roi))
+    table.add_row("Total Savings", format_cost(savings))
+    table.add_row("Cache Creation Cost", format_cost(cache_metrics.get('cache_creation_cost', 0)))
+    
+    console.print(table)
+    
+    # Show top sessions by cache efficiency
+    if 'by_session' in cache_metrics:
+        console.print("\n[bold]Top Sessions by Cache Efficiency[/bold]")
+        session_table = Table(show_header=True)
+        session_table.add_column("Session", style="cyan")
+        session_table.add_column("Efficiency", justify="right")
+        session_table.add_column("Cache Read", justify="right")
+        session_table.add_column("Cache Write", justify="right")
+        
+        sorted_sessions = sorted(
+            cache_metrics['by_session'].items(),
+            key=lambda x: x[1]['efficiency'],
+            reverse=True
+        )[:5]
+        
+        for session_id, metrics in sorted_sessions:
+            if metrics['efficiency'] > 0:
+                session_table.add_row(
+                    session_id[:8] + "...",
+                    f"{metrics['efficiency']:.1f}x",
+                    format_number(metrics['cache_read']),
+                    format_number(metrics['cache_write'])
+                )
+        
+        if sorted_sessions:
+            console.print(session_table)
+
+
+def display_response_time_analysis(stats: dict):
+    """Display response time analysis."""
+    console.print("\n[bold]Response Time Analysis[/bold]")
+    
+    # Calculate response times from all messages
+    all_messages = stats.get('all_messages', [])
+    if not all_messages:
+        console.print("[yellow]No message data available for response time analysis[/yellow]")
+        return
+        
+    response_metrics = calculate_response_times(all_messages)
+    
+    table = Table(show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Time (s)", justify="right")
+    
+    table.add_row("Average Response", f"{response_metrics['avg_response_time']:.1f}")
+    table.add_row("Median Response", f"{response_metrics['median_response_time']:.1f}")
+    table.add_row("95th Percentile", f"{response_metrics['p95_response_time']:.1f}")
+    table.add_row("99th Percentile", f"{response_metrics['p99_response_time']:.1f}")
+    table.add_row("Fastest Response", f"{response_metrics['min_response_time']:.1f}")
+    table.add_row("Slowest Response", f"{response_metrics['max_response_time']:.1f}")
+    table.add_row("Total Responses", format_number(response_metrics['total_responses']))
+    
+    console.print(table)
+    
+    # By model breakdown
+    if response_metrics['by_model']:
+        console.print("\n[bold]Response Times by Model[/bold]")
+        model_table = Table(show_header=True)
+        model_table.add_column("Model", style="cyan")
+        model_table.add_column("Avg", justify="right")
+        model_table.add_column("Median", justify="right")
+        model_table.add_column("P95", justify="right")
+        model_table.add_column("Count", justify="right")
+        
+        for model, metrics in sorted(response_metrics['by_model'].items()):
+            # Shorten model name
+            display_model = model
+            if len(model) > 25:
+                display_model = model[:22] + "..."
+                
+            model_table.add_row(
+                display_model,
+                f"{metrics['avg']:.1f}s",
+                f"{metrics['median']:.1f}s",
+                f"{metrics['p95']:.1f}s",
+                format_number(metrics['count'])
+            )
+        
+        console.print(model_table)
+
+
+def display_enhanced_tool_usage(stats: dict, limit: int):
+    """Display enhanced tool usage analytics."""
+    console.print("\n[bold]Tool Usage Analytics[/bold]")
+    
+    all_messages = stats.get('all_messages', [])
+    if not all_messages:
+        console.print("[yellow]No message data available for tool analysis[/yellow]")
+        return
+        
+    tool_analytics = analyze_tool_usage(all_messages)
+    
+    table = Table(show_header=True)
+    table.add_column("Tool", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_column("Avg Tokens", justify="right")
+    table.add_column("Total Cost", justify="right")
+    table.add_column("Cost/Use", justify="right")
+    
+    tools_data = tool_analytics.get('tools', {})
+    for tool, data in list(tools_data.items())[:limit]:
+        table.add_row(
+            tool,
+            format_number(data['count']),
+            format_number(int(data['avg_tokens'])),
+            format_cost(data['total_cost']),
+            format_cost(data['avg_cost'])
+        )
+    
+    console.print(table)
+    
+    # Show tool combinations
+    any_combinations = any(data['top_combinations'] for data in tools_data.values())
+    if any_combinations:
+        console.print("\n[bold]Top Tool Combinations[/bold]")
+        combo_table = Table(show_header=True)
+        combo_table.add_column("Tool Pair", style="cyan")
+        combo_table.add_column("Count", justify="right")
+        
+        # Collect all combinations
+        all_combos = {}
+        for tool, data in tools_data.items():
+            for combo_tool, count in data['top_combinations']:
+                pair = tuple(sorted([tool, combo_tool]))
+                if pair not in all_combos:
+                    all_combos[pair] = count
+        
+        # Sort and display top combinations
+        sorted_combos = sorted(all_combos.items(), key=lambda x: x[1], reverse=True)[:5]
+        for (tool1, tool2), count in sorted_combos:
+            combo_table.add_row(f"{tool1} + {tool2}", format_number(count))
+        
+        if sorted_combos:
+            console.print(combo_table)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,15 @@ uvx claude-usage-analyzer --summary-only
 # Show tool usage statistics
 uvx claude-usage-analyzer --tools
 
+# Show cache efficiency analytics
+uvx claude-usage-analyzer --cache
+
+# Show response time analysis
+uvx claude-usage-analyzer --response-times
+
+# Show all enhanced analytics
+uvx claude-usage-analyzer --full
+
 # Limit items shown in tables
 uvx claude-usage-analyzer --limit 5
 ```
@@ -45,6 +54,9 @@ uvx claude-usage-analyzer --limit 5
 - **Docker Support**: Analyze usage from devcontainers
 - **Rich Terminal UI**: Beautiful tables and formatting
 - **Cost Tracking**: Automatic calculation based on current Claude API pricing
+- **Cache Analytics**: Track cache efficiency, ROI, and savings
+- **Response Time Analysis**: Monitor performance by model and percentiles
+- **Enhanced Tool Analytics**: Cost per tool, usage patterns, and combinations
 
 ## Example Output
 
