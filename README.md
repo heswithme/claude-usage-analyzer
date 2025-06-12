@@ -4,34 +4,38 @@ Analyze your Claude AI usage logs and calculate costs from `~/.claude` or Docker
 
 ## Quick Start
 
+### Option 1: Run directly with uvx (recommended)
 ```bash
-git clone https://github.com/yourusername/claude-usage-analyzer.git
+uvx claude-usage-analyzer
+```
+
+### Option 2: Clone and run
+```bash
+git clone https://github.com/heswithme/claude-usage-analyzer.git
 cd claude-usage-analyzer
 uv run .
 ```
-
-That's it! No installation needed.
 
 ## Usage
 
 ```bash
 # Analyze local ~/.claude directory (default)
-uv run .
+uvx claude-usage-analyzer
 
 # Analyze Docker containers
-uv run . --docker
+uvx claude-usage-analyzer --docker
 
 # Export results to JSON
-uv run . --output results.json
+uvx claude-usage-analyzer --output results.json
 
 # Show only summary
-uv run . --summary-only
+uvx claude-usage-analyzer --summary-only
 
 # Show tool usage statistics
-uv run . --tools
+uvx claude-usage-analyzer --tools
 
 # Limit items shown in tables
-uv run . --limit 5
+uvx claude-usage-analyzer --limit 5
 ```
 
 ## Features
