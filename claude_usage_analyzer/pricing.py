@@ -155,14 +155,15 @@ class CostCalculator:
         # If models are specified, use the most expensive one
         if models_used:
             # Find the most expensive model based on output pricing
+            normalized_models = [normalize_model_name(m) for m in models_used]
             most_expensive_model = max(
-                models_used,
+                normalized_models,
                 key=lambda m: self.pricing.get(m, self.pricing['default'])['output']
             )
             model_pricing = self.pricing.get(most_expensive_model, self.pricing['default'])
         else:
             # Use Opus pricing as it's the most expensive (conservative estimate)
-            model_pricing = self.pricing.get('claude-opus-4-20250514', self.pricing['default'])
+            model_pricing = self.pricing.get('opus-4', self.pricing['default'])
         
         input_cost = (usage.get('input_tokens', 0) / 1_000_000) * model_pricing['input']
         output_cost = (usage.get('output_tokens', 0) / 1_000_000) * model_pricing['output']
