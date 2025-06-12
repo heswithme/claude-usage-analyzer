@@ -64,7 +64,8 @@ class UsageParser:
             }),
             "errors": [],
             "tool_usage": defaultdict(int),
-            "hourly_distribution": defaultdict(int)
+            "hourly_distribution": defaultdict(int),
+            "all_messages": []  # Store all messages for advanced analytics
         }
     
     def _find_jsonl_files(self) -> List[Path]:
@@ -105,6 +106,10 @@ class UsageParser:
         """Process a single log entry."""
         entry_type = data.get('type')
         session_id = data.get('sessionId', 'unknown')
+        
+        # Store all messages for advanced analytics
+        if entry_type in ['user', 'assistant']:
+            stats['all_messages'].append(data)
         
         # Handle user messages
         if entry_type == 'user' and 'message' in data:

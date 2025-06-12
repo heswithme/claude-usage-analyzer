@@ -4,32 +4,39 @@ from typing import Dict, Any, List, Optional
 
 
 # Pricing per 1M tokens (in USD)
-PRICING = {
-    'claude-3-opus-20240229': {
+# Using base model names without timestamps for better compatibility
+MODEL_PRICING = {
+    'opus-4': {
         'input': 15.00,
         'output': 75.00,
         'cache_write': 18.75,
         'cache_read': 1.875
     },
-    'claude-opus-4-20250514': {
+    'opus-3': {
         'input': 15.00,
         'output': 75.00,
         'cache_write': 18.75,
         'cache_read': 1.875
     },
-    'claude-3-5-sonnet-20241022': {
+    'sonnet-4': {
         'input': 3.00,
         'output': 15.00,
         'cache_write': 3.75,
         'cache_read': 0.30
     },
-    'claude-3-5-haiku-20241022': {
+    'sonnet-3.5': {
+        'input': 3.00,
+        'output': 15.00,
+        'cache_write': 3.75,
+        'cache_read': 0.30
+    },
+    'haiku-3.5': {
         'input': 1.00,
         'output': 5.00,
         'cache_write': 1.25,
         'cache_read': 0.10
     },
-    'claude-3-haiku-20240307': {
+    'haiku-3': {
         'input': 0.25,
         'output': 1.25,
         'cache_write': 0.30,
@@ -44,12 +51,35 @@ PRICING = {
     }
 }
 
+def normalize_model_name(model: str) -> str:
+    """Normalize model name to match pricing keys."""
+    if not model:
+        return 'default'
+    
+    model_lower = model.lower()
+    
+    # Extract key parts
+    if 'opus-4' in model_lower or 'opus 4' in model_lower:
+        return 'opus-4'
+    elif 'opus' in model_lower:
+        return 'opus-3'
+    elif 'sonnet-4' in model_lower or 'sonnet 4' in model_lower:
+        return 'sonnet-4'
+    elif 'sonnet' in model_lower:
+        return 'sonnet-3.5'
+    elif 'haiku' in model_lower and '3.5' in model_lower:
+        return 'haiku-3.5'
+    elif 'haiku' in model_lower:
+        return 'haiku-3'
+    
+    return 'default'
+
 
 class CostCalculator:
     """Calculate costs based on token usage."""
     
     def __init__(self, custom_pricing: Dict[str, Dict[str, float]] = None):
-        self.pricing = PRICING.copy()
+        self.pricing = MODEL_PRICING.copy()
         if custom_pricing:
             self.pricing.update(custom_pricing)
     
@@ -98,7 +128,8 @@ class CostCalculator:
     
     def _calculate_model_costs(self, model: str, usage: Dict[str, Any]) -> Dict[str, float]:
         """Calculate costs for a specific model."""
-        model_pricing = self.pricing.get(model, self.pricing['default'])
+        normalized_model = normalize_model_name(model)
+        model_pricing = self.pricing.get(normalized_model, self.pricing['default'])
         
         input_cost = (usage.get('input_tokens', 0) / 1_000_000) * model_pricing['input']
         output_cost = (usage.get('output_tokens', 0) / 1_000_000) * model_pricing['output']
@@ -124,14 +155,15 @@ class CostCalculator:
         # If models are specified, use the most expensive one
         if models_used:
             # Find the most expensive model based on output pricing
+            normalized_models = [normalize_model_name(m) for m in models_used]
             most_expensive_model = max(
-                models_used,
+                normalized_models,
                 key=lambda m: self.pricing.get(m, self.pricing['default'])['output']
             )
             model_pricing = self.pricing.get(most_expensive_model, self.pricing['default'])
         else:
             # Use Opus pricing as it's the most expensive (conservative estimate)
-            model_pricing = self.pricing.get('claude-opus-4-20250514', self.pricing['default'])
+            model_pricing = self.pricing.get('opus-4', self.pricing['default'])
         
         input_cost = (usage.get('input_tokens', 0) / 1_000_000) * model_pricing['input']
         output_cost = (usage.get('output_tokens', 0) / 1_000_000) * model_pricing['output']
