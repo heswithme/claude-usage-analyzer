@@ -10,13 +10,13 @@ MODEL_PRICING = {
         'input': 15.00,
         'output': 75.00,
         'cache_write': 18.75,
-        'cache_read': 1.875
+        'cache_read': 1.50
     },
     'opus-3': {
         'input': 15.00,
         'output': 75.00,
         'cache_write': 18.75,
-        'cache_read': 1.875
+        'cache_read': 1.50
     },
     'sonnet-4': {
         'input': 3.00,
