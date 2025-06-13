@@ -275,54 +275,54 @@ def handle_docker_analysis_raw() -> Tuple[Optional[dict], Optional[dict]]:
     for i, (container_info, _, claude_path) in enumerate(docker_containers):
         console.print(f"  [{i+1}] {container_info} - {claude_path}")
     
-    # Select container
-    if len(docker_containers) > 1:
-        choice = click.prompt("Select container", type=int, default=1)
-        if not 1 <= choice <= len(docker_containers):
-            choice = 1
-        container_name, container_id, container_claude_path = docker_containers[choice - 1]
+    # Analyze all containers
+    all_docker_stats = []
+    all_docker_costs = []
+    
+    for container_name, container_id, container_claude_path in docker_containers:
+        console.print(f"\nAnalyzing: {container_name}")
+        
+        # Copy .claude directory from container to temp location
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_claude = Path(temp_dir) / '.claude'
+            
+            console.print(f"Copying {container_claude_path} from container...")
+            copy_result = subprocess.run(
+                ['docker', 'cp', f"{container_id}:{container_claude_path}", str(temp_claude)],
+                capture_output=True,
+                text=True
+            )
+            
+            if copy_result.returncode == 0:
+                # Analyze the copied directory
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console
+                ) as progress:
+                    task = progress.add_task(f"Parsing {container_name} usage logs...", total=None)
+                    
+                    parser = UsageParser(str(temp_claude))
+                    stats = parser.parse_all_logs()
+                    
+                    if stats.get('total_messages'):
+                        progress.update(task, description="Calculating costs...")
+                        calculator = CostCalculator()
+                        costs = calculator.calculate_costs(stats)
+                        
+                        all_docker_stats.append(stats)
+                        all_docker_costs.append(costs)
+                        
+                    progress.update(task, completed=True)
+            else:
+                console.print(f"[red]Failed to copy .claude directory: {copy_result.stderr}[/red]")
+    
+    # Merge all Docker container results
+    if all_docker_stats:
+        merged_stats, merged_costs = merge_stats_and_costs(all_docker_stats, all_docker_costs)
+        return merged_stats, merged_costs
     else:
-        container_name, container_id, container_claude_path = docker_containers[0]
-    
-    console.print(f"\nUsing: {container_name}")
-    
-    # Copy .claude directory from container to temp location
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_claude = Path(temp_dir) / '.claude'
-        
-        console.print(f"Copying {container_claude_path} from container...")
-        copy_result = subprocess.run(
-            ['docker', 'cp', f"{container_id}:{container_claude_path}", str(temp_claude)],
-            capture_output=True,
-            text=True
-        )
-        
-        if copy_result.returncode == 0:
-            # Analyze the copied directory
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                task = progress.add_task("Parsing Docker usage logs...", total=None)
-                
-                parser = UsageParser(str(temp_claude))
-                stats = parser.parse_all_logs()
-                
-                if not stats.get('total_messages'):
-                    return None, None
-                
-                
-                progress.update(task, description="Calculating costs...")
-                calculator = CostCalculator()
-                costs = calculator.calculate_costs(stats)
-                
-                progress.update(task, completed=True)
-                
-            return stats, costs
-        else:
-            console.print(f"[red]Failed to copy .claude directory: {copy_result.stderr}[/red]")
-            return None, None
+        return None, None
 
 
 def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple[dict, dict]:
