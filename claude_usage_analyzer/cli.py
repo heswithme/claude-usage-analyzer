@@ -3,8 +3,9 @@
 import json
 import subprocess
 import tempfile
+from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 import click
 from dateutil import parser as date_parser
@@ -18,6 +19,210 @@ from .pricing import CostCalculator
 from .analytics import calculate_cache_metrics, calculate_response_times, analyze_tool_usage
 
 console = Console()
+
+
+def parse_all_files_globally(all_files: List[Tuple[Path, str]]) -> Dict[str, Any]:
+    """Parse all JSONL files with global deduplication."""
+    stats = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_messages": 0,
+        "by_model": defaultdict(lambda: {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "messages": 0,
+            "requests": set()
+        }),
+        "by_session": defaultdict(lambda: {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "messages": 0,
+            "user_messages": 0,
+            "start_time": None,
+            "end_time": None,
+            "cwd": None,
+            "models_used": set()
+        }),
+        "by_date": defaultdict(lambda: {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "messages": 0,
+            "sessions": set()
+        }),
+        "errors": [],
+        "tool_usage": defaultdict(int),
+        "hourly_distribution": defaultdict(int),
+        "all_messages": [],
+        "seen_messages": set()  # Global deduplication
+    }
+    
+    # Parse each file
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        task = progress.add_task("Parsing usage logs...", total=len(all_files))
+        
+        for file_path, source in all_files:
+            try:
+                # Extract session ID from file path
+                session_id = file_path.stem
+                
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line_num, line in enumerate(f, 1):
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                process_entry_global(data, stats, session_id, source)
+                            except (json.JSONDecodeError, KeyError) as e:
+                                stats["errors"].append({
+                                    "file": str(file_path),
+                                    "line": line_num,
+                                    "error": str(e),
+                                    "source": source
+                                })
+            except Exception as e:
+                stats["errors"].append({
+                    "file": str(file_path),
+                    "error": f"Failed to read file: {e}",
+                    "source": source
+                })
+            
+            progress.update(task, advance=1)
+    
+    # Convert defaultdicts to regular dicts
+    stats['by_model'] = dict(stats['by_model'])
+    stats['by_session'] = dict(stats['by_session'])
+    stats['by_date'] = dict(stats['by_date'])
+    stats['tool_usage'] = dict(stats['tool_usage'])
+    stats['hourly_distribution'] = dict(stats['hourly_distribution'])
+    
+    return stats
+
+
+def process_entry_global(data: Dict[str, Any], stats: Dict[str, Any], session_id: str, source: str) -> None:
+    """Process a single log entry with global deduplication."""
+    entry_type = data.get('type')
+    
+    if entry_type == 'user' and 'cwd' in data:
+        # Track user messages and cwd
+        session_stats = stats['by_session'][session_id]
+        session_stats['user_messages'] += 1
+        if not session_stats['cwd']:
+            session_stats['cwd'] = data['cwd']
+        
+        # Update timestamps
+        if 'timestamp' in data:
+            timestamp = data['timestamp']
+            if not session_stats['start_time'] or timestamp < session_stats['start_time']:
+                session_stats['start_time'] = timestamp
+            if not session_stats['end_time'] or timestamp > session_stats['end_time']:
+                session_stats['end_time'] = timestamp
+    
+    elif entry_type == 'assistant' and 'message' in data:
+        message = data['message']
+        usage = message.get('usage', {})
+        
+        if not usage:
+            return
+        
+        # Global deduplication check
+        message_id = message.get('id')
+        request_id = data.get('requestId')
+        if message_id and request_id:
+            dedup_key = f"{message_id}:{request_id}"
+            if dedup_key in stats['seen_messages']:
+                # Skip duplicate message
+                return
+            stats['seen_messages'].add(dedup_key)
+        
+        # Extract token counts
+        tokens = {
+            'input': usage.get('input_tokens', 0),
+            'output': usage.get('output_tokens', 0),
+            'cache_creation': usage.get('cache_creation_input_tokens', 0),
+            'cache_read': usage.get('cache_read_input_tokens', 0)
+        }
+        
+        # Update total stats
+        stats['input_tokens'] += tokens['input']
+        stats['output_tokens'] += tokens['output']
+        stats['cache_creation_input_tokens'] += tokens['cache_creation']
+        stats['cache_read_input_tokens'] += tokens['cache_read']
+        stats['total_messages'] += 1
+        
+        # Update model stats
+        model = message.get('model', 'unknown')
+        model_stats = stats['by_model'][model]
+        model_stats['input_tokens'] += tokens['input']
+        model_stats['output_tokens'] += tokens['output']
+        model_stats['cache_creation_input_tokens'] += tokens['cache_creation']
+        model_stats['cache_read_input_tokens'] += tokens['cache_read']
+        model_stats['messages'] += 1
+        if request_id:
+            model_stats['requests'].add(request_id)
+        
+        # Update session stats
+        session_stats = stats['by_session'][session_id]
+        session_stats['input_tokens'] += tokens['input']
+        session_stats['output_tokens'] += tokens['output']
+        session_stats['cache_creation_input_tokens'] += tokens['cache_creation']
+        session_stats['cache_read_input_tokens'] += tokens['cache_read']
+        session_stats['messages'] += 1
+        session_stats['models_used'].add(model)
+        
+        # Update timestamps
+        if 'timestamp' in data:
+            timestamp = data['timestamp']
+            if not session_stats['start_time'] or timestamp < session_stats['start_time']:
+                session_stats['start_time'] = timestamp
+            if not session_stats['end_time'] or timestamp > session_stats['end_time']:
+                session_stats['end_time'] = timestamp
+            
+            # Update date stats
+            try:
+                dt = date_parser.parse(timestamp)
+                date_str = dt.strftime('%Y-%m-%d')
+                date_stats = stats['by_date'][date_str]
+                date_stats['input_tokens'] += tokens['input']
+                date_stats['output_tokens'] += tokens['output']
+                date_stats['cache_creation_input_tokens'] += tokens['cache_creation']
+                date_stats['cache_read_input_tokens'] += tokens['cache_read']
+                date_stats['messages'] += 1
+                date_stats['sessions'].add(session_id)
+                
+                # Update hourly distribution
+                hour = dt.hour
+                stats['hourly_distribution'][hour] += 1
+            except:
+                pass
+        
+        # Track tool usage
+        content = message.get('content', [])
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get('type') == 'tool_use':
+                    tool_name = item.get('name', 'unknown')
+                    stats['tool_usage'][tool_name] += 1
+        
+        # Store message for analytics
+        stats['all_messages'].append({
+            'timestamp': data.get('timestamp'),
+            'model': model,
+            'usage': usage,
+            'role': 'assistant',
+            'session_id': session_id,
+            'source': source
+        })
 
 
 def format_number(num: int) -> str:
@@ -244,29 +449,51 @@ def main(
         border_style="cyan"
     ))
     
-    # Collect all stats and costs
-    all_stats = []
-    all_costs = []
+    # Collect all JSONL files from all sources for unified parsing
+    all_jsonl_files = []
     sources = []
     
-    # Always analyze local directory first
-    local_stats, local_costs = analyze_claude_dir_raw(claude_dir, use_litellm=not no_litellm)
-    if local_stats and local_costs:
-        all_stats.append(local_stats)
-        all_costs.append(local_costs)
-        sources.append("local")
+    # Collect local files
+    claude_path = Path(claude_dir).expanduser()
+    if (claude_path / 'projects').exists():
+        local_files = list((claude_path / 'projects').rglob('*.jsonl'))
+        if local_files:
+            all_jsonl_files.extend([(f, 'local') for f in local_files])
+            sources.append("local")
     
-    # Additionally analyze Docker if requested
+    # Collect Docker files if requested
+    docker_temp_dirs = []
     if docker:
-        docker_stats, docker_costs = handle_docker_analysis_raw(use_litellm=not no_litellm)
-        if docker_stats and docker_costs:
-            all_stats.append(docker_stats)
-            all_costs.append(docker_costs)
+        docker_containers = find_docker_claude_dirs()
+        if docker_containers:
             sources.append("docker")
+            for container_name, container_id, container_claude_path in docker_containers:
+                # Copy to temp directory
+                with tempfile.TemporaryDirectory(delete=False) as temp_dir:
+                    docker_temp_dirs.append(temp_dir)
+                    temp_claude = Path(temp_dir) / '.claude'
+                    
+                    console.print(f"Copying {container_claude_path} from {container_name}...")
+                    copy_result = subprocess.run(
+                        ['docker', 'cp', f"{container_id}:{container_claude_path}", str(temp_claude)],
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if copy_result.returncode == 0:
+                        docker_files = list((temp_claude / 'projects').rglob('*.jsonl'))
+                        all_jsonl_files.extend([(f, f'docker:{container_name}') for f in docker_files])
     
-    # Merge and display results
-    if all_stats:
-        merged_stats, merged_costs = merge_stats_and_costs(all_stats, all_costs)
+    # Parse all files with global deduplication
+    if all_jsonl_files:
+        console.print(f"\nFound {len(all_jsonl_files)} JSONL files across {len(sources)} source(s)")
+        
+        # Create a unified parser with global deduplication
+        merged_stats = parse_all_files_globally(all_jsonl_files)
+        
+        # Calculate costs
+        calculator = CostCalculator(use_litellm=not no_litellm)
+        merged_costs = calculator.calculate_costs(merged_stats)
         
         # Export if requested
         if output:
@@ -280,6 +507,14 @@ def main(
         
         # Display results with source indicators
         display_results(merged_stats, merged_costs, sources, summary_only, tools, limit, cache, response_times, full)
+        
+        # Clean up Docker temp directories
+        for temp_dir in docker_temp_dirs:
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+            except:
+                pass
     else:
         console.print("[red]No Claude usage data found[/red]")
 
@@ -377,7 +612,7 @@ def handle_docker_analysis_raw(use_litellm: bool = True) -> Tuple[Optional[dict]
 
 
 def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple[dict, dict]:
-    """Merge multiple stats and costs dictionaries with deduplication."""
+    """Merge multiple stats and costs dictionaries with global deduplication."""
     merged_stats = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -390,7 +625,8 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
         "errors": [],
         "tool_usage": {},
         "hourly_distribution": {},
-        "all_messages": []  # Store all messages for analytics
+        "all_messages": [],  # Store all messages for analytics
+        "seen_messages": set()  # Track globally seen messages for deduplication
     }
     
     merged_costs = {
@@ -425,11 +661,14 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
                 merged_stats['by_model'][model][key] += model_stats.get(key, 0)
             merged_stats['by_model'][model]['requests'].extend(model_stats.get('requests', []))
         
-        # Merge sessions with deduplication - keep the one with more messages
+        # Merge sessions - for now just collect all sessions
         for session_id, session_stats in stats.get('by_session', {}).items():
-            if session_id not in merged_stats['by_session'] or \
-               session_stats.get('messages', 0) > merged_stats['by_session'][session_id].get('messages', 0):
+            if session_id not in merged_stats['by_session']:
                 merged_stats['by_session'][session_id] = session_stats
+            else:
+                # Merge session data - this will be recalculated later
+                existing = merged_stats['by_session'][session_id]
+                existing['messages'] = existing.get('messages', 0) + session_stats.get('messages', 0)
         
         # Merge by_date
         for date, date_stats in stats.get('by_date', {}).items():
@@ -685,7 +924,7 @@ def display_session_breakdown(stats: dict, costs: dict, limit: int):
         session_stats = stats['by_session'][session_id]
         
         # Format models used
-        models = session_stats.get('models_used', [])
+        models = list(session_stats.get('models_used', set()))
         if models:
             # Shorten model names
             short_models = []

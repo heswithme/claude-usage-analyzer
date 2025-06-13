@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-usage-analyzer"
-version = "0.3.1"
+version = "0.4.0"
 description = "Analyze Claude AI usage logs and calculate costs"
 readme = "README.md"
 requires-python = ">=3.8"
