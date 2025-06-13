@@ -509,13 +509,6 @@ def display_results(stats: dict, costs: dict, sources: List[str], summary_only: 
     if stats.get('errors'):
         console.print(f"\n[yellow]⚠[/yellow] Found {len(stats['errors'])} errors while parsing logs")
     
-    # Display deduplication warning if using multiple sources
-    if dedupe_warning:
-        console.print("\n[yellow]Note:[/yellow] Sessions are deduplicated across sources. Model and daily breakdowns may show higher totals due to aggregation before deduplication.")
-
-
-
-
 def display_overall_stats(stats: dict, costs: dict, source_text: str = ""):
     """Display overall usage statistics."""
     total_tokens = (
