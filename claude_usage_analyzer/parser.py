@@ -65,7 +65,8 @@ class UsageParser:
             "errors": [],
             "tool_usage": defaultdict(int),
             "hourly_distribution": defaultdict(int),
-            "all_messages": []  # Store all messages for advanced analytics
+            "all_messages": [],  # Store all messages for advanced analytics
+            "seen_messages": set()  # Track message ID + request ID combinations for deduplication
         }
     
     def _find_jsonl_files(self) -> List[Path]:
@@ -138,6 +139,16 @@ class UsageParser:
         
         if not usage:
             return
+            
+        # Check for duplicate messages (same message ID and request ID)
+        message_id = message.get('id')
+        request_id = data.get('requestId')
+        if message_id and request_id:
+            dedup_key = f"{message_id}:{request_id}"
+            if dedup_key in stats['seen_messages']:
+                # Skip duplicate message
+                return
+            stats['seen_messages'].add(dedup_key)
             
         # Extract token counts
         tokens = {
