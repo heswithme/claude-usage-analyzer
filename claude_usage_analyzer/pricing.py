@@ -1,6 +1,11 @@
 """Pricing calculations for Claude models."""
 
+import logging
 from typing import Dict, Any, List, Optional
+
+from .pricing_fetcher import LiteLLMPricingFetcher, ModelPricing
+
+logger = logging.getLogger(__name__)
 
 
 # Pricing per 1M tokens (in USD)
@@ -78,10 +83,55 @@ def normalize_model_name(model: str) -> str:
 class CostCalculator:
     """Calculate costs based on token usage."""
     
-    def __init__(self, custom_pricing: Dict[str, Dict[str, float]] = None):
+    def __init__(self, custom_pricing: Dict[str, Dict[str, float]] = None, use_litellm: bool = True):
         self.pricing = MODEL_PRICING.copy()
         if custom_pricing:
             self.pricing.update(custom_pricing)
+        
+        # Try to fetch LiteLLM pricing
+        if use_litellm:
+            self._fetch_litellm_pricing()
+    
+    def _fetch_litellm_pricing(self) -> None:
+        """Fetch and integrate LiteLLM pricing data."""
+        try:
+            fetcher = LiteLLMPricingFetcher()
+            litellm_pricing = fetcher.fetch_pricing()
+            
+            if not litellm_pricing:
+                logger.debug("No LiteLLM pricing data available")
+                return
+            
+            # Map LiteLLM model names to our normalized names
+            model_mappings = {
+                'claude-opus-4': ['opus-4'],
+                'claude-3-opus': ['opus-3'],
+                'claude-3-5-sonnet': ['sonnet-3.5'],
+                'claude-3-sonnet': ['sonnet-3.5'],
+                'claude-3-haiku': ['haiku-3'],
+                'claude-3-5-haiku': ['haiku-3.5'],
+                'claude-sonnet-4': ['sonnet-4'],
+            }
+            
+            # Update pricing for known models
+            updated_count = 0
+            for litellm_pattern, normalized_names in model_mappings.items():
+                # Search for models matching the pattern
+                for model_name, pricing_obj in litellm_pricing.items():
+                    if litellm_pattern in model_name.lower():
+                        costs = pricing_obj.to_million_token_costs()
+                        # Update all normalized names
+                        for normalized in normalized_names:
+                            self.pricing[normalized] = costs
+                            updated_count += 1
+                            logger.debug(f"Updated {normalized} pricing from {model_name}")
+                        break
+            
+            if updated_count > 0:
+                logger.info(f"Updated pricing for {updated_count} models from LiteLLM")
+            
+        except Exception as e:
+            logger.debug(f"Failed to fetch LiteLLM pricing: {e}")
     
     def calculate_costs(self, stats: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate costs for all models and sessions."""

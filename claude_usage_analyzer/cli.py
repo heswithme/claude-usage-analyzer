@@ -136,6 +136,16 @@ def find_docker_claude_dirs() -> List[Tuple[str, str, str]]:
     help='Search for Claude directories in Docker containers'
 )
 @click.option(
+    '--no-litellm',
+    is_flag=True,
+    help='Disable LiteLLM pricing (use hardcoded prices)'
+)
+@click.option(
+    '--refresh-pricing',
+    is_flag=True,
+    help='Force refresh of LiteLLM pricing data'
+)
+@click.option(
     '--output',
     '-o',
     type=click.Path(),
@@ -177,6 +187,8 @@ def find_docker_claude_dirs() -> List[Tuple[str, str, str]]:
 def main(
     claude_dir: str,
     docker: bool,
+    no_litellm: bool,
+    refresh_pricing: bool,
     output: Optional[str],
     summary_only: bool,
     tools: bool,
@@ -186,6 +198,16 @@ def main(
     full: bool
 ):
     """Analyze Claude AI usage logs and calculate costs."""
+    
+    # Handle pricing refresh if requested
+    if refresh_pricing and not no_litellm:
+        try:
+            from .pricing_fetcher import LiteLLMPricingFetcher
+            fetcher = LiteLLMPricingFetcher()
+            fetcher.fetch_pricing(force_refresh=True)
+            console.print("[green]✓[/green] LiteLLM pricing data refreshed")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Failed to refresh pricing: {e}[/yellow]")
     
     console.print(Panel.fit(
         "[bold cyan]Claude Usage Analyzer[/bold cyan]\n"
@@ -199,7 +221,7 @@ def main(
     sources = []
     
     # Always analyze local directory first
-    local_stats, local_costs = analyze_claude_dir_raw(claude_dir)
+    local_stats, local_costs = analyze_claude_dir_raw(claude_dir, use_litellm=not no_litellm)
     if local_stats and local_costs:
         all_stats.append(local_stats)
         all_costs.append(local_costs)
@@ -207,7 +229,7 @@ def main(
     
     # Additionally analyze Docker if requested
     if docker:
-        docker_stats, docker_costs = handle_docker_analysis_raw()
+        docker_stats, docker_costs = handle_docker_analysis_raw(use_litellm=not no_litellm)
         if docker_stats and docker_costs:
             all_stats.append(docker_stats)
             all_costs.append(docker_costs)
@@ -233,7 +255,7 @@ def main(
         console.print("[red]No Claude usage data found[/red]")
 
 
-def analyze_claude_dir_raw(claude_dir: str) -> Tuple[Optional[dict], Optional[dict]]:
+def analyze_claude_dir_raw(claude_dir: str, use_litellm: bool = True) -> Tuple[Optional[dict], Optional[dict]]:
     """Analyze a Claude directory and return raw stats and costs."""
     try:
         with Progress(
@@ -251,7 +273,7 @@ def analyze_claude_dir_raw(claude_dir: str) -> Tuple[Optional[dict], Optional[di
             
             
             progress.update(task, description="Calculating costs...")
-            calculator = CostCalculator()
+            calculator = CostCalculator(use_litellm=use_litellm)
             costs = calculator.calculate_costs(stats)
             
             progress.update(task, completed=True)
@@ -262,7 +284,7 @@ def analyze_claude_dir_raw(claude_dir: str) -> Tuple[Optional[dict], Optional[di
         return None, None
 
 
-def handle_docker_analysis_raw() -> Tuple[Optional[dict], Optional[dict]]:
+def handle_docker_analysis_raw(use_litellm: bool = True) -> Tuple[Optional[dict], Optional[dict]]:
     """Handle Docker container analysis and return raw stats and costs."""
     console.print("\n[yellow]Searching for Claude directories in Docker containers...[/yellow]")
     docker_containers = find_docker_claude_dirs()
@@ -307,7 +329,7 @@ def handle_docker_analysis_raw() -> Tuple[Optional[dict], Optional[dict]]:
                     
                     if stats.get('total_messages'):
                         progress.update(task, description="Calculating costs...")
-                        calculator = CostCalculator()
+                        calculator = CostCalculator(use_litellm=use_litellm)
                         costs = calculator.calculate_costs(stats)
                         
                         all_docker_stats.append(stats)
