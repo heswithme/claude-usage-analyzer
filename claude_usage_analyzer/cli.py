@@ -326,7 +326,7 @@ def handle_docker_analysis_raw() -> Tuple[Optional[dict], Optional[dict]]:
 
 
 def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple[dict, dict]:
-    """Merge multiple stats and costs dictionaries."""
+    """Merge multiple stats and costs dictionaries with deduplication."""
     merged_stats = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -356,13 +356,9 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
     }
     
     # Merge stats
-    for stats in all_stats:
-        # Merge totals
-        for key in ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 
-                    'cache_read_input_tokens', 'total_messages']:
-            merged_stats[key] += stats.get(key, 0)
+    for i, stats in enumerate(all_stats):
         
-        # Merge by_model
+        # Merge by_model (this is already deduplicated at model level)
         for model, model_stats in stats.get('by_model', {}).items():
             if model not in merged_stats['by_model']:
                 merged_stats['by_model'][model] = {
@@ -378,9 +374,11 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
                 merged_stats['by_model'][model][key] += model_stats.get(key, 0)
             merged_stats['by_model'][model]['requests'].extend(model_stats.get('requests', []))
         
-        # Merge sessions
+        # Merge sessions with deduplication - keep the one with more messages
         for session_id, session_stats in stats.get('by_session', {}).items():
-            merged_stats['by_session'][session_id] = session_stats
+            if session_id not in merged_stats['by_session'] or \
+               session_stats.get('messages', 0) > merged_stats['by_session'][session_id].get('messages', 0):
+                merged_stats['by_session'][session_id] = session_stats
         
         # Merge by_date
         for date, date_stats in stats.get('by_date', {}).items():
@@ -408,13 +406,23 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
         # Merge all messages
         merged_stats['all_messages'].extend(stats.get('all_messages', []))
     
+    # After merging, recalculate totals from deduplicated sessions
+    merged_stats['input_tokens'] = 0
+    merged_stats['output_tokens'] = 0
+    merged_stats['cache_creation_input_tokens'] = 0
+    merged_stats['cache_read_input_tokens'] = 0
+    merged_stats['total_messages'] = 0
+    
+    for session_stats in merged_stats['by_session'].values():
+        merged_stats['input_tokens'] += session_stats.get('input_tokens', 0)
+        merged_stats['output_tokens'] += session_stats.get('output_tokens', 0)
+        merged_stats['cache_creation_input_tokens'] += session_stats.get('cache_creation_input_tokens', 0)
+        merged_stats['cache_read_input_tokens'] += session_stats.get('cache_read_input_tokens', 0)
+        merged_stats['total_messages'] += session_stats.get('messages', 0)
+    
     # Merge costs
-    for costs in all_costs:
-        # Merge totals
-        for key in ['input_cost', 'output_cost', 'cache_write_cost', 'cache_read_cost', 'total_cost']:
-            merged_costs['total'][key] += costs.get('total', {}).get(key, 0)
-        
-        # Merge by_model costs
+    for i, costs in enumerate(all_costs):
+        # Merge by_model costs (keep as is - model level is accurate)
         for model, model_costs in costs.get('by_model', {}).items():
             if model not in merged_costs['by_model']:
                 merged_costs['by_model'][model] = {
@@ -427,8 +435,15 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
             for key in ['input_cost', 'output_cost', 'cache_write_cost', 'cache_read_cost', 'total_cost']:
                 merged_costs['by_model'][model][key] += model_costs.get(key, 0)
         
-        # Merge session costs
-        merged_costs['by_session'].update(costs.get('by_session', {}))
+        # Merge session costs - keep matching the stats deduplication
+        for session_id, session_cost in costs.get('by_session', {}).items():
+            # Check if this session is in merged_stats (it should be if we kept it)
+            if session_id in merged_stats['by_session']:
+                # Check if this cost data matches the stats data we kept
+                stats_messages = merged_stats['by_session'][session_id].get('messages', 0)
+                cost_messages = all_stats[i].get('by_session', {}).get(session_id, {}).get('messages', 0)
+                if stats_messages == cost_messages:
+                    merged_costs['by_session'][session_id] = session_cost
         
         # Merge date costs
         for date, date_costs in costs.get('by_date', {}).items():
@@ -443,6 +458,19 @@ def merge_stats_and_costs(all_stats: List[dict], all_costs: List[dict]) -> Tuple
             for key in ['input_cost', 'output_cost', 'cache_write_cost', 'cache_read_cost', 'total_cost']:
                 merged_costs['by_date'][date][key] += date_costs.get(key, 0)
     
+    # Recalculate total costs from deduplicated sessions
+    merged_costs['total'] = {
+        'input_cost': 0,
+        'output_cost': 0,
+        'cache_write_cost': 0,
+        'cache_read_cost': 0,
+        'total_cost': 0
+    }
+    
+    for session_cost in merged_costs['by_session'].values():
+        for key in merged_costs['total']:
+            merged_costs['total'][key] += session_cost.get(key, 0)
+    
     return merged_stats, merged_costs
 
 
@@ -450,8 +478,10 @@ def display_results(stats: dict, costs: dict, sources: List[str], summary_only: 
     """Display merged results with source indicators."""
     # Add source indicator to title if includes Docker
     source_text = ""
+    dedupe_warning = False
     if len(sources) > 1:
         source_text = " (local + docker)"
+        dedupe_warning = True
     elif "docker" in sources:
         source_text = " (docker only)"
     
@@ -478,6 +508,10 @@ def display_results(stats: dict, costs: dict, sources: List[str], summary_only: 
     # Display errors if any
     if stats.get('errors'):
         console.print(f"\n[yellow]⚠[/yellow] Found {len(stats['errors'])} errors while parsing logs")
+    
+    # Display deduplication warning if using multiple sources
+    if dedupe_warning:
+        console.print("\n[yellow]Note:[/yellow] Sessions are deduplicated across sources. Model and daily breakdowns may show higher totals due to aggregation before deduplication.")
 
 
 
