@@ -61,9 +61,9 @@ def find_docker_claude_dirs() -> List[Tuple[str, str, str]]:
     docker_dirs = []
     
     try:
-        # Get all running containers
+        # Get all containers (including stopped ones)
         result = subprocess.run(
-            ['docker', 'ps', '-q'],
+            ['docker', 'ps', '-a', '-q'],
             capture_output=True,
             text=True,
             check=True
@@ -74,37 +74,66 @@ def find_docker_claude_dirs() -> List[Tuple[str, str, str]]:
             if not container_id:
                 continue
                 
-            # Get container name
-            name_result = subprocess.run(
-                ['docker', 'inspect', '-f', '{{.Name}}', container_id],
+            # Get container info including state and mounts
+            inspect_result = subprocess.run(
+                ['docker', 'inspect', container_id],
                 capture_output=True,
                 text=True,
                 check=True
             )
-            container_name = name_result.stdout.strip().lstrip('/')
+            container_info = json.loads(inspect_result.stdout)[0]
+            container_name = container_info['Name'].lstrip('/')
+            is_running = container_info['State']['Running']
             
-            # Find .claude directories in the container
-            find_result = subprocess.run(
-                ['docker', 'exec', container_id, 'sh', '-c', 
-                 'find / -maxdepth 4 -name .claude -type d 2>/dev/null || true'],
-                capture_output=True,
-                text=True
-            )
-            
-            # Check both stdout and stderr
-            output = find_result.stdout or find_result.stderr
-            if output:
-                claude_paths = output.strip().split('\n')
-                for claude_path in claude_paths:
-                    if claude_path and '/.claude' in claude_path:
-                        claude_path = claude_path.strip()
-                        # Skip system paths
-                        if '/proc/' not in claude_path and '/sys/' not in claude_path:
+            # For running containers, use docker exec
+            if is_running:
+                # Find .claude directories in the container
+                find_result = subprocess.run(
+                    ['docker', 'exec', container_id, 'sh', '-c', 
+                     'find / -maxdepth 4 -name .claude -type d 2>/dev/null || true'],
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Check both stdout and stderr
+                output = find_result.stdout or find_result.stderr
+                if output:
+                    claude_paths = output.strip().split('\n')
+                    for claude_path in claude_paths:
+                        if claude_path and '/.claude' in claude_path:
+                            claude_path = claude_path.strip()
+                            # Skip system paths
+                            if '/proc/' not in claude_path and '/sys/' not in claude_path:
+                                # Determine location type
+                                if '/root/' in claude_path:
+                                    location = "root"
+                                elif '/home/' in claude_path:
+                                    parts = claude_path.split('/')
+                                    if len(parts) >= 3 and parts[1] == 'home':
+                                        location = parts[2]
+                                    else:
+                                        location = "home"
+                                else:
+                                    location = "other"
+                                
+                                docker_dirs.append((
+                                    f"{container_name} ({container_id[:12]}) [{location}]",
+                                    container_id,
+                                    claude_path
+                                ))
+            else:
+                # For stopped containers, check for volume mounts
+                mounts = container_info.get('Mounts', [])
+                for mount in mounts:
+                    if mount.get('Type') in ['bind', 'volume']:
+                        destination = mount.get('Destination', '')
+                        # Check if this mount might contain .claude
+                        if '/.claude' in destination or destination.endswith('/.claude'):
                             # Determine location type
-                            if '/root/' in claude_path:
+                            if '/root/' in destination:
                                 location = "root"
-                            elif '/home/' in claude_path:
-                                parts = claude_path.split('/')
+                            elif '/home/' in destination:
+                                parts = destination.split('/')
                                 if len(parts) >= 3 and parts[1] == 'home':
                                     location = parts[2]
                                 else:
@@ -113,9 +142,9 @@ def find_docker_claude_dirs() -> List[Tuple[str, str, str]]:
                                 location = "other"
                             
                             docker_dirs.append((
-                                f"{container_name} ({container_id[:12]}) [{location}]",
+                                f"{container_name} ({container_id[:12]}) [stopped,{location}]",
                                 container_id,
-                                claude_path
+                                destination
                             ))
                 
     except subprocess.CalledProcessError:
