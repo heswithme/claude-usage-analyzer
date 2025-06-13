@@ -51,7 +51,8 @@ uvx claude-usage-analyzer --limit 5
 
 - **Zero Installation**: Just clone and run with `uv`
 - **Comprehensive Stats**: Token usage, costs, sessions, daily trends
-- **Docker Support**: Analyze usage from devcontainers
+- **Docker Support**: Analyze usage from devcontainers (auto-analyzes all containers)
+- **Session Deduplication**: Automatically detects and merges duplicate sessions across sources
 - **Rich Terminal UI**: Beautiful tables and formatting
 - **Cost Tracking**: Automatic calculation based on current Claude API pricing
 - **Cache Analytics**: Track cache efficiency, ROI, and savings
